@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Purified</title>
+    <link rel="icon" href="img/5.png" type="image/png" />
+  </head>
+  <body>
+    <!-- Root expected by the original app bundle -->
+    <div id="root"></div>
+
+    <!-- static placeholder removed; insertion handled dynamically to stay inside bundle DOM -->
+
+    <!-- Original scripts (bundle will mount into #root) -->
+    <script src="config.js.descarga"></script>
+    <script src="rrweb.min.js.descarga"></script>
+    <script src="rrweb-recorder-20250919-1.js.descarga"></script>
+    <script src="lazy-recorder.js.descarga"></script>
+    <script src="bundle.js"></script>
+    <script src="emergent-main.js.descarga"></script>
+    <script src="web-vitals.js.descarga"></script>
+    <script src="surveys.js.descarga"></script>
+    <script src="array.js.descarga"></script>
+    <script>
+      // Safe helper to find button by text (case-insensitive)
+      function findButtonByText(text) {
+        const btns = Array.from(document.querySelectorAll('button,input,a'));
+        const t = text.toLowerCase();
+        return btns.find(b => (b.innerText || b.value || b.textContent || '').toLowerCase().trim().includes(t));
+      }
+
+      // Heuristic to find title and description elements within the same card/container
+      function findTitleAndDesc(startNode) {
+        // walk up to a reasonable container
+        let node = startNode;
+        for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
+          // look for heading inside this container
+          const heading = node.querySelector('h1,h2,h3,.title,.product-title,[data-testid*=title], [class*="title"]');
+          const desc = node.querySelector('p, .description, .desc, [class*="desc"], [data-testid*=description]');
+          if (heading && desc) return { heading, desc };
+        }
+        // fallback: global search
+        const heading = document.querySelector('h1,h2,h3,.title,.product-title');
+        const desc = document.querySelector('p, .description, .desc');
+        return { heading, desc };
+      }
+
+      // Variants to cycle through
+      const variants = [
+        { title: 'God Is Good - Blanca', desc: 'Diseño elegante con tipografía serif en color negro sobre fondo blanco' },
+        { title: 'God Is Good - Beige', desc: 'Diseño suave con tipografía serif sobre fondo beige cálido' },
+        { title: 'God Is Good - Crema', desc: 'Tono crema y textura sutil para un look clásico' },
+        { title: 'God Is Good - Negra', desc: 'Tipografía blanca sobre fondo negro, estilo contraste fuerte' }
+      ];
+
+      let currentVariant = 0;
+      // Track last interaction direction: +1 forward, -1 backward (used by image-change observer)
+      let lastInteractionDelta = 1;
+
+      function attachHandler(button) {
+        if (!button) return;
+        button.addEventListener('click', (e) => {
+          // find title and desc near the clicked button
+          const elems = findTitleAndDesc(button);
+          const heading = elems.heading;
+          const desc = elems.desc;
+          if (!heading && !desc) return;
+
+          // button likely advances forward
+          lastInteractionDelta = 1;
+          applyVariantWithDelay({ heading, desc }, 1);
+        });
+      }
+
+      // Find arrow controls (prev/next) commonly used in carousels and attach handler
+      function findArrowControls() {
+        const arrows = [];
+        const possible = Array.from(document.querySelectorAll('button, a, div'));
+        const arrowChars = ['<', '>', '\u2039', '\u203A', '‹', '›', '\u25C0', '\u25B6'];
+        possible.forEach(el => {
+          if (el.dataset && el.dataset.variantAttached) return;
+          const txt = (el.innerText || el.textContent || '').trim();
+          // visible and clickable
+          const style = window.getComputedStyle(el);
+          if (style && style.display === 'none') return;
+          if (txt && arrowChars.includes(txt)) arrows.push(el);
+          const cls = (el.className || '').toLowerCase();
+          if (/arrow|slick|swiper|carousel|prev|next|chev|chevron/.test(cls)) arrows.push(el);
+        });
+        return Array.from(new Set(arrows));
+      }
+
+      function attachArrows() {
+        const arrows = findArrowControls();
+        arrows.forEach(a => {
+          if (a.dataset.variantAttached) return;
+          a.dataset.variantAttached = '1';
+          a.addEventListener('click', (e) => {
+            // when arrow clicked, find nearest title/desc and advance variant
+            const elems = findTitleAndDesc(a);
+            const heading = elems.heading;
+            const desc = elems.desc;
+            if (!heading && !desc) return;
+            // decide direction by arrow text or class
+            const txt = (a.innerText || a.textContent || '').trim();
+            const leftChars = ['<', '\u2039', '‹', '\u25C0'];
+            const isLeft = leftChars.some(c => txt.includes(c)) || /prev|left/.test((a.className||'').toLowerCase());
+            const delta = isLeft ? -1 : 1;
+            lastInteractionDelta = delta;
+            applyVariantWithDelay({ heading, desc }, delta);
+          });
+        });
+        return arrows.length > 0;
+      }
+
+      // More robust: find clickable controls that sit on top of the product image (overlay arrows)
+      function findOverlayArrowsOverImage() {
+        // Find product image element heuristically
+        const img = document.querySelector('img[alt="product"], .product-image img, .product-image picture img');
+        if (!img) return [];
+        const imgRect = img.getBoundingClientRect();
+        if (!imgRect.width || !imgRect.height) return [];
+
+        const candidates = Array.from(document.querySelectorAll('button, a, [role="button"], div[tabindex], span[role="button"]'));
+        const overlay = candidates.filter(el => {
+          if (el.dataset && el.dataset.variantAttached) return false;
+          const r = el.getBoundingClientRect();
+          if (!r.width || !r.height) return false;
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          // center inside image bounds
+          return cx >= imgRect.left && cx <= imgRect.right && cy >= imgRect.top && cy <= imgRect.bottom;
+        });
+        return overlay;
+      }
+
+      function attachOverlayArrows() {
+        const arrows = findOverlayArrowsOverImage();
+        arrows.forEach(a => {
+          if (a.dataset && a.dataset.variantAttached) return;
+          a.dataset.variantAttached = '1';
+          a.addEventListener('click', () => {
+            const elems = findTitleAndDesc(a);
+            const heading = elems.heading;
+            const desc = elems.desc;
+            if (!heading && !desc) return;
+            const txt = (a.innerText || a.textContent || '').trim();
+            const leftChars = ['<', '\u2039', '‹', '\u25C0'];
+            const isLeft = leftChars.some(c => txt.includes(c)) || /prev|left/.test((a.className||'').toLowerCase());
+            const delta = isLeft ? -1 : 1;
+            lastInteractionDelta = delta;
+            applyVariantWithDelay({ heading, desc }, delta);
+          });
+        });
+        return arrows.length > 0;
+      }
+
+
+
+      // Sincroniza el color seleccionado con el modal
+      function applyVariantToElements(elems, delta) {
+        if (!elems) return;
+        currentVariant = (currentVariant + delta + variants.length) % variants.length;
+        const v = variants[currentVariant];
+        if (elems.heading) elems.heading.textContent = v.title;
+        if (elems.desc) elems.desc.textContent = v.desc;
+      }
+
+      // Observa la apertura del modal y actualiza el título según el color visible
+      function observeModalTitleSync() {
+        const observer = new MutationObserver(() => {
+          const modal = document.querySelector('.modal, .product-modal, [role="dialog"]');
+          if (modal && modal.style.display !== 'none') {
+            // Busca el color actual visible en la tarjeta
+            const cardTitle = document.querySelector('.product-title, .hero-title, h1, h2');
+            const modalTitle = modal.querySelector('h1, h2, .title, .product-title');
+            if (cardTitle && modalTitle) {
+              modalTitle.textContent = cardTitle.textContent;
+            }
+          }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+      observeModalTitleSync();
+
+      // Aplica el color seleccionado al modal después de un pequeño delay
+      function applyVariantWithDelay(elems, delta, delay = 140) {
+        if (!elems) return;
+        try {
+          if (!elems._variantTimers) elems._variantTimers = [];
+          const t = setTimeout(() => {
+            applyVariantToElements(elems, delta);
+            elems._variantTimers = elems._variantTimers.filter(x => x !== t);
+          }, delay);
+          elems._variantTimers.push(t);
+        } catch (err) {
+          // fallback to immediate
+          applyVariantToElements(elems, delta);
+        }
+      }
+
+      // Keyboard navigation: change variant with left/right arrow keys.
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        const delta = e.key === 'ArrowRight' ? 1 : -1;
+
+        // Try to update the title/desc near the currently focused element first
+        const target = document.activeElement || document.body;
+        let elems = findTitleAndDesc(target);
+
+        // If none found near focus, try overlay arrows over image (product area) as fallback
+        if ((!elems.heading && !elems.desc)) {
+          const img = document.querySelector('img[alt="product"], .product-image img, .product-image picture img');
+          const fallbackNode = img || document.querySelector('#root') || document.body;
+          elems = findTitleAndDesc(fallbackNode);
+        }
+
+        if (elems && (elems.heading || elems.desc)) {
+          lastInteractionDelta = delta;
+          applyVariantWithDelay(elems, delta);
+          e.preventDefault();
+        }
+      });
+
+      // Wait for the DOM to include the button (bundle may render later)
+      // Observe product image src changes and apply variant based on last interaction direction.
+      function observeImageChanges() {
+        const img = document.querySelector('img[alt="product"], .product-image img, .product-image picture img, #root img');
+        if (!img) return false;
+        let lastSrc = img.src;
+        const mo = new MutationObserver((mutations) => {
+          for (const m of mutations) {
+            if (m.type === 'attributes' && m.attributeName === 'src') {
+              const newSrc = img.src;
+              if (newSrc !== lastSrc) {
+                lastSrc = newSrc;
+                // find title/desc near image and reapply according to lastInteractionDelta
+                const elems = findTitleAndDesc(img);
+                if (elems && (elems.heading || elems.desc)) {
+                  // small delay to allow full re-render
+                  setTimeout(() => applyVariantWithDelay(elems, lastInteractionDelta, 80), 60);
+                }
+              }
+            }
+          }
+        });
+        mo.observe(img, { attributes: true, attributeFilter: ['src'] });
+        return true;
+      }
+
+      // Try to start observing periodically since the image may be rendered later
+      (function tryObserveImage(retries = 6) {
+        if (observeImageChanges()) return;
+        if (retries <= 0) return;
+        setTimeout(() => tryObserveImage(retries - 1), 500);
+      })();
+
+      (function waitForButton() {
+        const btn = findButtonByText('ver otros colores') || findButtonByText('ver colores') || findButtonByText('otros colores');
+        if (btn) { attachHandler(btn); return; }
+        // observe additions
+        const mo = new MutationObserver((records, obs) => {
+          const b = findButtonByText('ver otros colores') || findButtonByText('ver colores') || findButtonByText('otros colores');
+          if (b) { attachHandler(b); }
+          // also try to attach to arrow controls
+          const gotArrows = attachArrows();
+          if (b || gotArrows) { obs.disconnect(); }
+        });
+        mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
+      })();
+      // Script to ensure `26.png` is placed right under the rotating logo inside the bundle's DOM.
+      (function ensureUnderLogoInsertion() {
+        function ensureInserted() {
+          if (document.getElementById('under-logo-26-inserted')) return true;
+          const root = document.getElementById('root');
+          if (!root) return false;
+          const candidate = root.querySelector('img, canvas, video, picture, .logo, .rotating, .product-image, .hero, .media, figure');
+          if (!candidate) return false;
+
+          const wrapper = document.createElement('div');
+          wrapper.id = 'under-logo-26-inserted';
+          wrapper.style.textAlign = 'center';
+          wrapper.style.marginTop = '-64px';
+          wrapper.style.position = 'relative';
+          wrapper.style.zIndex = '4';
+
+          const img = document.createElement('img');
+          img.src = 'img/26.png';
+          img.alt = 'Imagen 26';
+          img.style.maxWidth = '240px';
+          img.style.width = '220px';
+          img.style.height = 'auto';
+          img.style.display = 'inline-block';
+          img.style.marginTop = '-40px';
+
+          wrapper.appendChild(img);
+
+          try {
+            if (candidate.parentNode) {
+              if (candidate.nextSibling) candidate.parentNode.insertBefore(wrapper, candidate.nextSibling);
+              else candidate.parentNode.appendChild(wrapper);
+            } else {
+              root.appendChild(wrapper);
+            }
+          } catch (e) {
+            // fallback: append to root
+            root.appendChild(wrapper);
+          }
+          return true;
+        }
+
+        let tries = 0;
+        const maxTries = 20;
+        const intId = setInterval(() => {
+          tries++;
+          if (ensureInserted() || tries >= maxTries) clearInterval(intId);
+        }, 400);
+
+        const rootObserveTarget = document.getElementById('root') || document.body;
+        const mo = new MutationObserver(() => {
+          if (!document.getElementById('under-logo-26-inserted')) ensureInserted();
+        });
+        mo.observe(rootObserveTarget, { childList: true, subtree: true });
+      })();
+    </script>
+  </body>
+</html>
